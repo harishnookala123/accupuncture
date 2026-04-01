@@ -63,9 +63,7 @@ class _StaticHomeScreenState extends State<StaticHomeScreen> {
           'Acupuncture',
           style: TextStyle(color: Colors.teal.shade700,fontWeight: FontWeight.bold),
         ),
-        actions: [
 
-        ],
       ),
       body: Container(
         height:double.infinity,
