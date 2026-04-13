@@ -93,7 +93,16 @@ class _RegisterScreenState extends State<RegisterScreen> with SingleTickerProvid
         // Navigate to login screen
         Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (context)=>const LoginScreen()), (route) => false);
       }
-      else{
+      else if(user.status == "User not Exist"){
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(user.status ?? 'Registration failed'),
+            backgroundColor: const Color(0xFFE57373),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        );
+      }else if(user.status == "Incorrect Password"){
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(user.status ?? 'Registration failed'),
@@ -103,6 +112,7 @@ class _RegisterScreenState extends State<RegisterScreen> with SingleTickerProvid
           ),
         );
       }
+
     }
   }
 
@@ -133,18 +143,8 @@ class _RegisterScreenState extends State<RegisterScreen> with SingleTickerProvid
     if (value.length < 8) {
       return 'Password must be at least 8 characters';
     }
-    if (!value.contains(RegExp(r'[A-Z]'))) {
-      return 'Password must contain at least one uppercase letter';
-    }
-    if (!value.contains(RegExp(r'[a-z]'))) {
-      return 'Password must contain at least one lowercase letter';
-    }
-    if (!value.contains(RegExp(r'[0-9]'))) {
-      return 'Password must contain at least one number';
-    }
     return null;
   }
-
   String? _validateConfirmPassword(String? value) {
     if (value == null || value.isEmpty) {
       return 'Please confirm your password';
@@ -159,14 +159,14 @@ class _RegisterScreenState extends State<RegisterScreen> with SingleTickerProvid
   Widget build(BuildContext context) {
     return Scaffold(
       body: Container(
-        decoration: BoxDecoration(
+        decoration: const BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors: [
-              const Color(0xFFF1F8E9),
-              const Color(0xFFE8F5E9),
-              const Color(0xFFDCEDC8),
+              Color(0xFFF1F8E9),
+              Color(0xFFE8F5E9),
+              Color(0xFFDCEDC8),
             ],
           ),
         ),

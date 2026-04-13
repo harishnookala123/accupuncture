@@ -1,7 +1,12 @@
+import 'package:acupuncture/static_homescreen.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'api/api_service.dart';
 
 class BookingScreen extends StatefulWidget {
-  const BookingScreen({super.key});
+  final String? userId;
+  final String? name;
+  const BookingScreen({super.key, this.userId, this.name});
 
   @override
   State<BookingScreen> createState() => _BookingScreenState();
@@ -12,6 +17,8 @@ class _BookingScreenState extends State<BookingScreen> {
   String? selectedTime;
 
   List<DateTime> quickDates = [];
+  Set<String> blockedDates = {}; // Store blocked dates as "yyyy-MM-dd"
+  bool isLoadingBlockedDates = true;
 
   final List<String> morningSlots = [
     "10:00 AM",
@@ -37,17 +44,88 @@ class _BookingScreenState extends State<BookingScreen> {
   void initState() {
     super.initState();
     generateQuickDates();
+    checkBlockedDates();
   }
 
   void generateQuickDates() {
     DateTime now = DateTime.now();
-
     // Only three dates: Today, Tomorrow, Day After
     quickDates = [
       now, // Today
       now.add(const Duration(days: 1)), // Tomorrow
       now.add(const Duration(days: 2)), // Day After
     ];
+  }
+
+  Future<void> checkBlockedDates() async {
+    setState(() {
+      isLoadingBlockedDates = true;
+    });
+
+    try {
+      // Format dates as "yyyy-MM-dd"
+      List<String> dateStrings = quickDates.map((date) {
+        return DateFormat("yyyy-MM-dd").format(date);
+      }).toList();
+
+      print("Checking blocked dates: $dateStrings");
+
+      final response = await ApiService().getBlockedDates(dateStrings);
+      print("Blocked dates response: $response");
+
+      // Clear previous blocked dates
+      Set<String> newBlockedDates = {};
+
+      // Check if response has blockedDates array
+      if (response['blockedDates'] != null && response['blockedDates'] is List) {
+        List blockedList = response['blockedDates'];
+
+        for (var blockedItem in blockedList) {
+          // Extract the blocked_date from each item
+          String blockedDateStr = blockedItem['blocked_date'] ?? '';
+
+          if (blockedDateStr.isNotEmpty) {
+            // Parse the UTC date
+            DateTime blockedDateTime = DateTime.parse(blockedDateStr);
+
+            // Convert to local date without time
+            // This ensures we only compare the date part, ignoring timezone
+            DateTime localDate = DateTime.utc(
+              blockedDateTime.year,
+              blockedDateTime.month,
+              blockedDateTime.day,
+            );
+
+            // Format to "yyyy-MM-dd" for comparison
+            String formattedDate = DateFormat("yyyy-MM-dd").format(localDate);
+            newBlockedDates.add(formattedDate);
+
+            print("Blocked date from API: $blockedDateStr -> Local date: $formattedDate");
+          }
+        }
+      }
+
+      // Also check if response has blocked_dates (alternative format)
+      if (response['blocked_dates'] != null && response['blocked_dates'] is List) {
+        List blockedList = response['blocked_dates'];
+        for (var blockedDate in blockedList) {
+          newBlockedDates.add(blockedDate.toString());
+        }
+      }
+
+      setState(() {
+        blockedDates = newBlockedDates;
+        isLoadingBlockedDates = false;
+      });
+
+      print("Final blocked dates set: $blockedDates");
+
+    } catch (e) {
+      print("Error fetching blocked dates: $e");
+      setState(() {
+        isLoadingBlockedDates = false;
+      });
+    }
   }
 
   String getDateLabel(DateTime date) {
@@ -88,14 +166,45 @@ class _BookingScreenState extends State<BookingScreen> {
     // Check if date is not in the past
     DateTime now = DateTime.now();
     DateTime today = DateTime(now.year, now.month, now.day);
-    return date.isAfter(today) || date.isAtSameMomentAs(today);
+    DateTime dateToCheck = DateTime(date.year, date.month, date.day);
+
+    // Check if date is in the past
+    if (dateToCheck.isBefore(today)) {
+      return false;
+    }
+
+    // Check if date is blocked
+    String dateString = DateFormat("yyyy-MM-dd").format(date);
+    if (blockedDates.contains(dateString)) {
+      return false;
+    }
+
+    return true;
   }
 
-  void confirmBooking() {
+  bool isDateBlocked(DateTime date) {
+    String dateString = DateFormat("yyyy-MM-dd").format(date);
+    return blockedDates.contains(dateString);
+  }
+
+  void confirmBooking() async {
     if (selectedDate == null || selectedTime == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: const Text("Please select date & time"),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.all(16),
+        ),
+      );
+      return;
+    }
+
+    // Double check if selected date is blocked
+    if (isDateBlocked(selectedDate!)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text("This date is not available for booking"),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
           margin: const EdgeInsets.all(16),
@@ -114,7 +223,8 @@ class _BookingScreenState extends State<BookingScreen> {
           children: [
             Icon(Icons.check_circle, color: Colors.teal, size: 28),
             SizedBox(width: 10),
-            Text("Booking Confirmed", style: TextStyle(fontWeight: FontWeight.bold,fontSize: 18)),
+            Text("Booking Confirmed", style: TextStyle(fontWeight: FontWeight.bold,
+                fontSize: 18)),
           ],
         ),
         content: Column(
@@ -137,7 +247,7 @@ class _BookingScreenState extends State<BookingScreen> {
                 children: [
                   Row(
                     children: [
-                      const Icon(Icons.calendar_today, size: 18, color: Colors.teal),
+                      const Icon(Icons.calendar_month_sharp, size: 18, color: Colors.teal),
                       const SizedBox(width: 8),
                       Text(
                         formatFullDate(selectedDate!),
@@ -163,30 +273,66 @@ class _BookingScreenState extends State<BookingScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () async {
+              var bookAppointment = await ApiService().bookSlot(
+                  widget.userId!,
+                  DateFormat("yyyy-MM-dd").format(selectedDate!),
+                  selectedTime!,
+                  1
+              );
+              if (bookAppointment['status'] == "Slot booked successfully") {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(bookAppointment['status']),
+                    backgroundColor: Colors.green.shade700,
+                    behavior: SnackBarBehavior.floating,
+                    margin: const EdgeInsets.all(16),
+                  ),
+                );
+                Navigator.of(context).pushAndRemoveUntil(
+                    MaterialPageRoute(
+                      builder: (context) => StaticHomeScreen(
+                        userId: widget.userId,
+                        name: widget.name,
+                      ),
+                    ),
+                        (route) => false
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(bookAppointment['status']),
+                    backgroundColor: Colors.red.shade700,
+                    behavior: SnackBarBehavior.floating,
+                    margin: const EdgeInsets.all(16),
+                  ),
+                );
+              }
+            },
             style: TextButton.styleFrom(
               foregroundColor: Colors.teal,
             ),
-            child: const Text("OK"),
+            child: const Text("Confirm"),
           ),
         ],
       ),
     );
-
-    // TODO: Send to backend
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          "Book Appointment",
-          style: TextStyle(fontWeight: FontWeight.w600),
-        ),
-        backgroundColor: Colors.teal,
-        elevation: 0,
-        centerTitle: true,
+          title: const Text(
+            "Book Appointment",
+            style: TextStyle(fontWeight: FontWeight.w600,
+                color: Colors.white
+            ),
+          ),
+          backgroundColor: Colors.teal,
+          elevation: 1.2,
+          centerTitle: true,
+          iconTheme: const IconThemeData(color: Colors.white)
       ),
       body: Container(
         decoration: BoxDecoration(
@@ -275,193 +421,262 @@ class _BookingScreenState extends State<BookingScreen> {
 
                 const SizedBox(height: 12),
 
+                /// Loading indicator for blocked dates
+                if (isLoadingBlockedDates)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 20),
+                    child: Center(
+                      child: SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
+                  )
+                else
                 /// Three date chips in a row
-                Row(
-                  children: quickDates.asMap().entries.map((entry) {
-                    int index = entry.key;
-                    DateTime date = entry.value;
-                    bool isSelected = selectedDate != null &&
-                        selectedDate!.day == date.day &&
-                        selectedDate!.month == date.month &&
-                        selectedDate!.year == date.year;
-                    bool isAvailable = isDateAvailable(date);
+                  Row(
+                    children: quickDates.asMap().entries.map((entry) {
+                      int index = entry.key;
+                      DateTime date = entry.value;
+                      bool isSelected = selectedDate != null &&
+                          selectedDate!.day == date.day &&
+                          selectedDate!.month == date.month &&
+                          selectedDate!.year == date.year;
+                      bool isAvailable = isDateAvailable(date);
+                      bool isBlocked = isDateBlocked(date);
 
-                    return Expanded(
-                      child: Padding(
-                        padding: EdgeInsets.only(
-                          left: index == 0 ? 0 : 6,
-                          right: index == 2 ? 0 : 6,
-                        ),
-                        child: GestureDetector(
-                          onTap: isAvailable ? () {
-                            setState(() {
-                              selectedDate = date;
-                              selectedTime = null;
-                            });
-                          } : null,
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 200),
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            decoration: BoxDecoration(
-                              color: isSelected
-                                  ? Colors.teal
-                                  : Colors.white,
-                              borderRadius: BorderRadius.circular(15),
-                              border: Border.all(
+                      // Debug print
+                      if (isBlocked) {
+                        print("Date ${DateFormat("yyyy-MM-dd").format(date)} is blocked");
+                      }
+
+                      return Expanded(
+                        child: Padding(
+                          padding: EdgeInsets.only(
+                            left: index == 0 ? 0 : 6,
+                            right: index == 2 ? 0 : 6,
+                          ),
+                          child: GestureDetector(
+                            onTap: isAvailable ? () {
+                              setState(() {
+                                selectedDate = date;
+                                selectedTime = null;
+                              });
+                            } : null,
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 200),
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              decoration: BoxDecoration(
                                 color: isSelected
                                     ? Colors.teal
-                                    : Colors.grey.shade300,
-                                width: 1.5,
+                                    : isBlocked
+                                    ? Colors.grey.shade200
+                                    : Colors.white,
+                                borderRadius: BorderRadius.circular(15),
+                                border: Border.all(
+                                  color: isSelected
+                                      ? Colors.teal
+                                      : isBlocked
+                                      ? Colors.grey.shade300
+                                      : Colors.grey.shade300,
+                                  width: 1.5,
+                                ),
+                                boxShadow: isSelected ? [
+                                  BoxShadow(
+                                    color: Colors.teal.withOpacity(0.3),
+                                    blurRadius: 8,
+                                    offset: const Offset(0, 4),
+                                  ),
+                                ] : [],
                               ),
-                              boxShadow: isSelected ? [
-                                BoxShadow(
-                                  color: Colors.teal.withOpacity(0.3),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 4),
-                                ),
-                              ] : [],
-                            ),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Text(
-                                  getDateLabel(date),
-                                  style: TextStyle(
-                                    color: isSelected
-                                        ? Colors.white
-                                        : Colors.grey.shade700,
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Text(
+                                    getDateLabel(date),
+                                    style: TextStyle(
+                                      color: isSelected
+                                          ? Colors.white
+                                          : isBlocked
+                                          ? Colors.grey.shade500
+                                          : Colors.grey.shade700,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
-                                ),
-                                const SizedBox(height: 6),
-                                Text(
-                                  "${date.day} ${_getMonthAbbreviation(date)}",
-                                  style: TextStyle(
-                                    color: isSelected
-                                        ? Colors.white
-                                        : Colors.black,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    "${date.day} ${_getMonthAbbreviation(date)}",
+                                    style: TextStyle(
+                                      color: isSelected
+                                          ? Colors.white
+                                          : isBlocked
+                                          ? Colors.grey.shade500
+                                          : Colors.black,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
-                                ),
-                              ],
+                                  if (isBlocked)
+                                    Container(
+                                      margin: const EdgeInsets.only(top: 4),
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: Colors.red.shade100,
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        "Blocked",
+                                        style: TextStyle(
+                                          fontSize: 9,
+                                          color: Colors.red.shade700,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    );
-                  }).toList(),
-                ),
+                      );
+                    }).toList(),
+                  ),
 
                 const SizedBox(height: 30),
 
-                /// ⏰ Time Slots
-                const Text(
-                  "Select Time Slot",
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.teal,
+                /// ⏰ Time Slots (only show if date selected and not blocked)
+                if (selectedDate != null && !isDateBlocked(selectedDate!)) ...[
+                  const Text(
+                    "Select Time Slot",
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.teal,
+                    ),
                   ),
-                ),
 
-                const SizedBox(height: 12),
+                  const SizedBox(height: 12),
 
-                /// Morning Slots
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(15),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.grey.shade100,
-                        blurRadius: 5,
-                      ),
-                    ],
+                  /// Morning Slots
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(15),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.grey.shade100,
+                          blurRadius: 5,
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.wb_sunny, size: 20, color: Colors.orange),
+                            const SizedBox(width: 8),
+                            Text(
+                              "Morning",
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey.shade700,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: morningSlots.map((time) {
+                            bool isSelected = selectedTime == time;
+                            return _buildTimeChip(time, isSelected);
+                          }).toList(),
+                        ),
+                      ],
+                    ),
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(Icons.wb_sunny, size: 20, color: Colors.orange),
-                          const SizedBox(width: 8),
-                          Text(
-                            "Morning",
+
+                  const SizedBox(height: 15),
+
+                  /// Afternoon Slots
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(15),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.grey.shade100,
+                          blurRadius: 5,
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.nightlight_round, size: 20, color: Colors.indigo),
+                            const SizedBox(width: 8),
+                            Text(
+                              "Afternoon & Evening",
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey.shade700,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: afternoonSlots.map((time) {
+                            bool isSelected = selectedTime == time;
+                            return _buildTimeChip(time, isSelected);
+                          }).toList(),
+                        ),
+                      ],
+                    ),
+                  ),
+                ] else if (selectedDate != null && isDateBlocked(selectedDate!)) ...[
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(15),
+                      border: Border.all(color: Colors.red.shade200),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.block, color: Colors.red.shade600, size: 24),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            "This date is not available for booking. Please select another date.",
                             style: TextStyle(
+                              color: Colors.red.shade700,
                               fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.grey.shade700,
+                              fontWeight: FontWeight.w500,
                             ),
                           ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Wrap(
-                        spacing: 10,
-                        runSpacing: 10,
-                        children: morningSlots.map((time) {
-                          bool isSelected = selectedTime == time;
-
-                          return _buildTimeChip(time, isSelected);
-                        }).toList(),
-                      ),
-                    ],
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-
-                const SizedBox(height: 15),
-
-                /// Afternoon Slots
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(15),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.grey.shade100,
-                        blurRadius: 5,
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(Icons.nightlight_round, size: 20, color: Colors.indigo),
-                          const SizedBox(width: 8),
-                          Text(
-                            "Afternoon & Evening",
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.grey.shade700,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Wrap(
-                        spacing: 10,
-                        runSpacing: 10,
-                        children: afternoonSlots.map((time) {
-                          bool isSelected = selectedTime == time;
-
-                          return _buildTimeChip(time, isSelected);
-                        }).toList(),
-                      ),
-                    ],
-                  ),
-                ),
+                ],
 
                 const SizedBox(height: 20),
 
                 /// 📌 Selected Summary
-                if (selectedDate != null && selectedTime != null)
+                if (selectedDate != null && selectedTime != null && !isDateBlocked(selectedDate!))
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
@@ -547,7 +762,9 @@ class _BookingScreenState extends State<BookingScreen> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: confirmBooking,
+                    onPressed: (selectedDate != null && selectedTime != null && !isDateBlocked(selectedDate!))
+                        ? confirmBooking
+                        : null,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.teal,
                       foregroundColor: Colors.white,
@@ -556,6 +773,7 @@ class _BookingScreenState extends State<BookingScreen> {
                         borderRadius: BorderRadius.circular(15),
                       ),
                       elevation: 2,
+                      disabledBackgroundColor: Colors.grey.shade300,
                     ),
                     child: const Text(
                       "Confirm Booking",
@@ -582,8 +800,10 @@ class _BookingScreenState extends State<BookingScreen> {
   }
 
   Widget _buildTimeChip(String time, bool isSelected) {
+    bool isPast = isPastTime(time);
+
     return GestureDetector(
-      onTap: selectedDate != null
+      onTap: (selectedDate != null && !isPast && !isDateBlocked(selectedDate!))
           ? () {
         setState(() {
           selectedTime = time;
@@ -594,22 +814,69 @@ class _BookingScreenState extends State<BookingScreen> {
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
-          color: isSelected ? Colors.teal : Colors.grey.shade50,
+          color: isPast
+              ? Colors.grey.shade300
+              : isSelected
+              ? Colors.teal
+              : Colors.grey.shade50,
           borderRadius: BorderRadius.circular(25),
           border: Border.all(
-            color: isSelected ? Colors.teal : Colors.grey.shade300,
-            width: 1,
+            color: isPast
+                ? Colors.grey
+                : isSelected
+                ? Colors.teal
+                : Colors.grey.shade100,
           ),
         ),
         child: Text(
           time,
           style: TextStyle(
-            color: isSelected ? Colors.white : Colors.black,
+            color: isPast
+                ? Colors.grey.shade600
+                : isSelected
+                ? Colors.white
+                : Colors.black,
             fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
             fontSize: 13,
           ),
         ),
       ),
     );
+  }
+
+  bool isPastTime(String slotTime) {
+    if (selectedDate == null) return false;
+
+    DateTime now = DateTime.now();
+
+    // Only check for today
+    if (selectedDate!.year != now.year ||
+        selectedDate!.month != now.month ||
+        selectedDate!.day != now.day) {
+      return false;
+    }
+
+    // Convert "10:30 AM" → DateTime
+    final parts = slotTime.split(" ");
+    final hm = parts[0].split(":");
+
+    int hour = int.parse(hm[0]);
+    int minute = int.parse(hm[1]);
+
+    if (parts[1] == "PM" && hour != 12) {
+      hour += 12;
+    } else if (parts[1] == "AM" && hour == 12) {
+      hour = 0;
+    }
+
+    DateTime slotDateTime = DateTime(
+      now.year,
+      now.month,
+      now.day,
+      hour,
+      minute,
+    );
+
+    return slotDateTime.isBefore(now);
   }
 }

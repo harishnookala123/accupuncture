@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 class ServiceDetailScreen extends StatelessWidget {
   final Map<String, dynamic> service;
 
-  const ServiceDetailScreen({Key? key, required this.service}) : super(key: key);
+  const ServiceDetailScreen({super.key, required this.service});
 
   @override
   Widget build(BuildContext context) {

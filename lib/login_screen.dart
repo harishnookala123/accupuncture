@@ -1,8 +1,10 @@
+import 'package:acupuncture/Admin/admin_screen.dart';
 import 'package:acupuncture/api/api_service.dart';
 import 'package:acupuncture/register_screen.dart';
 import 'package:acupuncture/static_homescreen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'model/user_model.dart';
 
@@ -51,7 +53,6 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
 
   Future<void> _handleLogin() async {
     if (_phoneController.text.isEmpty || _passwordController.text.isEmpty) {
-
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please fill in all fields'),
@@ -60,20 +61,65 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
         ),
       );
       return;
-    }else{
-      user = await ApiService().loginUser(_phoneController.text, _passwordController.text);
-      print(user);
     }
 
+    // Start loading immediately
     setState(() => _isLoading = true);
-    await Future.delayed(const Duration(seconds: 2));
-    setState(() => _isLoading = false);
 
-    if (user!.status == "Login Successful") {
-      Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (context)=>const StaticHomeScreen()), (route) => false);
+    try {
+      // 🔹 Admin login (no API call → fast)
+      if (_phoneController.text == "1234567890" &&
+          _passwordController.text == "Admin123") {
+
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString("user_id", "Admin2");
+        await prefs.setString("name", "Admin");
+
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(
+            builder: (context) => const AdminScreen(username: "Admin"),
+          ),
+              (route) => false,
+        );
+        return;
+      }
+
+      // 🔹 API login
+      final user = await ApiService()
+          .loginUser(_phoneController.text, _passwordController.text);
+
+      if (user == null) {
+        throw Exception("No response from server");
+      }
+
+      if (user.status == "Login Successful") {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString("user_id", user.userid);
+        await prefs.setString("name", user.name);
+
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(
+            builder: (context) => StaticHomeScreen(
+              userId: user.userid,
+              name: user.name,
+            ),
+          ),
+              (route) => false,
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(user.status ?? "Login failed")),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error: ${e.toString()}")),
+      );
+    } finally {
+      // Stop loading
+      setState(() => _isLoading = false);
     }
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(

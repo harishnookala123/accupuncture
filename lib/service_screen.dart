@@ -70,6 +70,7 @@ class ServicesScreen extends StatelessWidget {
               pinned: true,
               stretch: true,
               backgroundColor: Colors.teal,
+              iconTheme: const IconThemeData(color: Colors.white),
               flexibleSpace: FlexibleSpaceBar(
                 title: const Text(
                   "Our Services",
@@ -127,17 +128,17 @@ class ServicesScreen extends StatelessWidget {
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          _showConsultationDialog(context);
-        },
-        backgroundColor: Colors.teal,
-        icon: const Icon(Icons.calendar_today, color: Colors.white),
-        label: const Text(
-          "Book Consultation",
-          style: TextStyle(color: Colors.white),
-        ),
-      ),
+      // floatingActionButton: FloatingActionButton.extended(
+      //   onPressed: () {
+      //     _showConsultationDialog(context);
+      //   },
+      //   backgroundColor: Colors.teal,
+      //   icon: const Icon(Icons.calendar_today, color: Colors.white),
+      //   label: const Text(
+      //     "Book Consultation",
+      //     style: TextStyle(color: Colors.white),
+      //   ),
+      // ),
     );
   }
 
