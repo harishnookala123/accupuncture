@@ -1,6 +1,7 @@
 import 'package:acupuncture/Admin/admin_screen.dart';
 import 'package:acupuncture/api/api_service.dart';
 import 'package:acupuncture/register_screen.dart';
+import 'package:acupuncture/service.dart';
 import 'package:acupuncture/static_homescreen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -68,13 +69,13 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
 
     try {
       // 🔹 Admin login (no API call → fast)
-      if (_phoneController.text == "1234567890" &&
+      if (_phoneController.text == "7207213436" &&
           _passwordController.text == "Admin123") {
 
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString("user_id", "Admin2");
         await prefs.setString("name", "Admin");
-
+         NotificationService().saveTokenToServer();
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(
             builder: (context) => const AdminScreen(username: "Admin"),
@@ -88,15 +89,11 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
       final user = await ApiService()
           .loginUser(_phoneController.text, _passwordController.text);
 
-      if (user == null) {
-        throw Exception("No response from server");
-      }
-
       if (user.status == "Login Successful") {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString("user_id", user.userid);
         await prefs.setString("name", user.name);
-
+        NotificationService().saveTokenToServer();
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(
             builder: (context) => StaticHomeScreen(
@@ -394,8 +391,9 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                                   ),
                                   const SizedBox(height: 16),
 
-                                  // Password Field
-// Option 1: Modern Password Field with Strength Indicator
+                                  // Password Field// Option 1: Modern Password Field with Strength Indicator
+
+
                                   Container(
                                     decoration: BoxDecoration(
                                       color: Colors.white,

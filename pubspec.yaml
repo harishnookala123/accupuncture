@@ -2,7 +2,6 @@ name: acupuncture
 description: "A new Flutter project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
-publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
 # The following defines the version and build number for your application.
 # A version number is three numbers separated by dots, like 1.2.43
@@ -16,7 +15,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+2
+version: 1.0.0+3
 
 environment:
   sdk: ^3.5.0
@@ -42,6 +41,10 @@ dependencies:
   intl: any
   shared_preferences: any
   flutter_launcher_icons: ^0.14.4
+  firebase_core: any
+  firebase_messaging : any
+  awesome_notifications  : any
+  device_info_plus: any
 dev_dependencies:
   flutter_test:
     sdk: flutter

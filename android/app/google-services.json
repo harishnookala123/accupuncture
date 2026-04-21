@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "590657511533",
+    "project_id": "tracking-d20f9",
+    "storage_bucket": "tracking-d20f9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:590657511533:android:ef388cbac2dc93805a9f64",
+        "android_client_info": {
+          "package_name": "com.example.tracking"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCR2OTCpiZWRblPW1F4Io07uQ_zX-REPXQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:590657511533:android:cf3ac3c41122f9395a9f64",
+        "android_client_info": {
+          "package_name": "com.sss.acupuncture"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCR2OTCpiZWRblPW1F4Io07uQ_zX-REPXQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

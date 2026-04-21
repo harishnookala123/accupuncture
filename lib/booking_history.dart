@@ -18,12 +18,71 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
   bool isLoading = true;
   Map<int, String> serviceNames = {};
   Set<int> fetchingIds = {};
+  Map<String, String> userNames = {};
   static const String baseUrl = 'https://acupuncturemapp.sssbi.com';
 
   @override
   void initState() {
     super.initState();
     fetchBookings();
+  }
+
+  // Parse booking_date which is List<Map<String, dynamic>>
+  List<Map<String, dynamic>> parseBookingDates(dynamic data) {
+    if (data == null) return [];
+
+    if (data is List) {
+      return data.map((item) {
+        if (item is Map) {
+          return Map<String, dynamic>.from(item);
+        }
+        return <String, dynamic>{};
+      }).toList();
+    } else if (data is String && data.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(data);
+        if (decoded is List) {
+          return decoded.map((item) {
+            if (item is Map) {
+              return Map<String, dynamic>.from(item);
+            }
+            return <String, dynamic>{};
+          }).toList();
+        }
+      } catch (e) {
+        print("Error parsing booking_date string: $e");
+      }
+    }
+    return [];
+  }
+
+  // Parse session numbers from List<int>
+  List<int> parseSessionNumbers(dynamic data) {
+    if (data == null) return [];
+
+    if (data is List) {
+      return data.map((e) {
+        if (e is int) return e;
+        if (e is String) return int.tryParse(e) ?? 0;
+        return 0;
+      }).toList();
+    } else if (data is String && data.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(data);
+        if (decoded is List) {
+          return decoded.map((e) {
+            if (e is int) return e;
+            if (e is String) return int.tryParse(e) ?? 0;
+            return 0;
+          }).toList();
+        }
+      } catch (e) {
+        return [int.tryParse(data) ?? 0];
+      }
+    } else if (data is int) {
+      return [data];
+    }
+    return [];
   }
 
   Future<void> fetchBookings() async {
@@ -35,8 +94,18 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
       );
       final data = response.data;
 
+      print("Raw slots data: ${data["slots"]}");
+
       if (data["status"] == "User slots fetched successfully") {
         final slotsData = data["slots"];
+
+        for (var slot in slotsData) {
+          String userId = slot["user_id"]?.toString() ?? "";
+          if (userId.isNotEmpty && !userNames.containsKey(userId)) {
+            await fetchUserName(userId);
+          }
+        }
+
         setState(() {
           bookings = slotsData;
         });
@@ -50,15 +119,34 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
         });
       }
     } catch (e) {
+      print("Error fetching bookings: $e");
       setState(() {
         isLoading = false;
       });
     }
   }
 
+  Future<void> fetchUserName(String userId) async {
+    try {
+      print("Fetching details for user ID: $userId");
+      final response = await ApiService().getUserDetails(userId);
+      print("USER RESPONSE: $response");
+      if (response["status"] == "User details fetched successfully") {
+        final user = response["user"];
+        String name = user["name"] ?? userId;
+        setState(() {
+          userNames[userId] = name;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        userNames[userId] = userId;
+      });
+    }
+  }
+
   Future<void> fetchServiceNames(List slots) async {
     List<Future> futures = [];
-
     for (var slot in slots) {
       int? treatmentId = slot["treatment_id"];
       if (treatmentId != null && treatmentId > 0 &&
@@ -68,7 +156,6 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
         futures.add(_fetchServiceName(treatmentId));
       }
     }
-
     await Future.wait(futures);
   }
 
@@ -76,6 +163,7 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
     try {
       final response = await ApiService().getServiceDetails(treatmentId);
       String serviceName = response['title'] ?? "Treatment";
+      print("Service response for $treatmentId: $response");
       setState(() {
         serviceNames[treatmentId] = serviceName;
       });
@@ -93,6 +181,11 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
     return serviceNames[treatmentId] ?? "Treatment";
   }
 
+  String getUserName(String? userId) {
+    if (userId == null || userId.isEmpty) return "Unknown User";
+    return userNames[userId] ?? userId;
+  }
+
   String formatDate(String date) {
     try {
       DateTime d = DateTime.parse(date);
@@ -102,65 +195,135 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
     }
   }
 
-  String formatDateTime(String dateTime) {
+  String formatTime(String time) {
+    // Handle inconsistent time formats like "10:30Am" -> "10:30 AM"
     try {
-      DateTime d = DateTime.parse(dateTime);
-      return DateFormat("dd MMM yyyy, hh:mm a").format(d);
+      String formattedTime = time;
+      if (time.toLowerCase().contains('am')) {
+        formattedTime = time.replaceAll(RegExp(r'Am|am|AM'), 'AM');
+      } else if (time.toLowerCase().contains('pm')) {
+        formattedTime = time.replaceAll(RegExp(r'Pm|pm|PM'), 'PM');
+      }
+      return formattedTime;
     } catch (e) {
-      return dateTime;
+      return time;
     }
   }
 
-  bool isDatePassed(String date, String time) {
+  // ✅ NEW: Check if session can be cancelled (more than 3 hours before appointment)
+  bool canCancelSession(String date, String time) {
     try {
       DateTime now = DateTime.now();
-      DateTime bookingDate = DateTime.parse(date);
-      final parts = time.split(" ");
-      final hm = parts[0].split(":");
-      int hour = int.parse(hm[0]);
-      int minute = int.parse(hm[1]);
-      if (parts[1] == "PM" && hour != 12) hour += 12;
-      if (parts[1] == "AM" && hour == 12) hour = 0;
+      DateTime sessionDate = DateTime.parse(date);
+
+      // Parse time
+      String cleanTime = time.replaceAll(RegExp(r'Am|am|AM|Pm|pm|PM'), '').trim();
+      final parts = cleanTime.split(":");
+      int hour = int.parse(parts[0]);
+      int minute = int.parse(parts[1]);
+
+      // Adjust for AM/PM
+      if (time.toLowerCase().contains('pm') && hour != 12) {
+        hour += 12;
+      } else if (time.toLowerCase().contains('am') && hour == 12) {
+        hour = 0;
+      }
+
       DateTime fullDateTime = DateTime(
-        bookingDate.year, bookingDate.month, bookingDate.day, hour, minute,
+        sessionDate.year, sessionDate.month, sessionDate.day, hour, minute,
       );
-      return fullDateTime.isBefore(now);
+
+      // Calculate difference in hours
+      Duration difference = fullDateTime.difference(now);
+      double hoursDifference = difference.inMinutes / 60;
+
+      // Can cancel if more than 3 hours remaining
+      return hoursDifference > 3;
     } catch (e) {
+      print("Error checking cancellation eligibility: $e");
       return false;
     }
   }
 
-  bool canCancel(String status, String date, String time) {
-    if (status.toLowerCase() == "cancelled") return false;
-    if (isDatePassed(date, time)) return false;
-    return true;
+  // ✅ Check if session is past
+  bool isSessionPast(String date, String time) {
+    try {
+      DateTime now = DateTime.now();
+      DateTime sessionDate = DateTime.parse(date);
+
+      String cleanTime = time.replaceAll(RegExp(r'Am|am|AM|Pm|pm|PM'), '').trim();
+      final parts = cleanTime.split(":");
+      int hour = int.parse(parts[0]);
+      int minute = int.parse(parts[1]);
+
+      if (time.toLowerCase().contains('pm') && hour != 12) {
+        hour += 12;
+      } else if (time.toLowerCase().contains('am') && hour == 12) {
+        hour = 0;
+      }
+
+      DateTime fullDateTime = DateTime(
+        sessionDate.year, sessionDate.month, sessionDate.day, hour, minute,
+      );
+      return fullDateTime.isBefore(now);
+    } catch (e) {
+      print("Error checking if session is past: $e");
+      return false;
+    }
   }
 
-  String getDisplayStatus(String status) {
-    switch (status.toLowerCase()) {
-      case "cancelled":
-        return "Cancelled";
-      case "booked":
-        return "Upcoming";
-      default:
-        return status;
+  // ✅ Get cancellation message based on time remaining
+  String getCancellationMessage(String date, String time) {
+    try {
+      DateTime now = DateTime.now();
+      DateTime sessionDate = DateTime.parse(date);
+
+      String cleanTime = time.replaceAll(RegExp(r'Am|am|AM|Pm|pm|PM'), '').trim();
+      final parts = cleanTime.split(":");
+      int hour = int.parse(parts[0]);
+      int minute = int.parse(parts[1]);
+
+      if (time.toLowerCase().contains('pm') && hour != 12) {
+        hour += 12;
+      } else if (time.toLowerCase().contains('am') && hour == 12) {
+        hour = 0;
+      }
+
+      DateTime fullDateTime = DateTime(
+        sessionDate.year, sessionDate.month, sessionDate.day, hour, minute,
+      );
+
+      Duration difference = fullDateTime.difference(now);
+      double hoursDifference = difference.inMinutes / 60;
+
+      if (hoursDifference <= 0) {
+        return "This session has already passed";
+      } else if (hoursDifference <= 3) {
+        return "Cannot cancel less than 3 hours before appointment";
+      } else {
+        int hoursLeft = hoursDifference.floor();
+        int minutesLeft = difference.inMinutes % 60;
+        return "Cancel available (${hoursLeft}h ${minutesLeft}m remaining)";
+      }
+    } catch (e) {
+      return "Cancellation not available";
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.grey[50],
       appBar: AppBar(
         elevation: 0,
         backgroundColor: Colors.teal,
-        foregroundColor: Colors.black,
+        foregroundColor: Colors.black87,
         title: const Text(
           "Booking History",
           style: TextStyle(
-            fontSize: 28,
-            fontWeight: FontWeight.w700,
+            fontSize: 20,
+            fontWeight: FontWeight.w600,
             color: Colors.white,
-            letterSpacing: -0.5,
           ),
         ),
         centerTitle: false,
@@ -171,32 +334,18 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
           : bookings.isEmpty
           ? _buildEmptyState()
           : ListView.builder(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.all(16),
         itemCount: bookings.length,
-        itemBuilder: (context, index) => _buildBookingCard(bookings[index]),
+        itemBuilder: (context, index) =>
+            _buildBookingCard(bookings[index]),
       ),
     );
   }
 
   Widget _buildLoadingState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const SizedBox(
-            width: 32,
-            height: 32,
-            child: CircularProgressIndicator(
-              strokeWidth: 2.5,
-              color: Color(0xFF1A1A1A),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            "Loading...",
-            style: TextStyle(color: Colors.grey[500], fontSize: 14),
-          ),
-        ],
+    return const Center(
+      child: CircularProgressIndicator(
+        color: Color(0xFF10B981),
       ),
     );
   }
@@ -206,364 +355,406 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              color: Colors.grey[100],
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              Icons.calendar_today_outlined,
-              size: 32,
-              color: Colors.grey[400],
-            ),
+          Icon(
+            Icons.calendar_today_outlined,
+            size: 64,
+            color: Colors.grey[400],
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
           Text(
             "No bookings yet",
             style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-              color: Colors.grey[700],
+              fontSize: 16,
+              color: Colors.grey[600],
             ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            "Your appointments will appear here",
-            style: TextStyle(fontSize: 14, color: Colors.grey[500]),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildBookingCard(dynamic item) {
-    String date = item["booking_date"] ?? "";
-    String time = item["slot_time"] ?? "";
-    String status = item["status"] ?? "booked";
-    int bookingId = item["id"] ?? 0;
-    int? treatmentId = item["treatment_id"];
-    int sessionNumber = item["session_number"] ?? 1;
-    String createdAt = item["created_at"] ?? "";
+  Widget _buildBookingCard(dynamic booking) {
+    List<Map<String, dynamic>> slotsList = parseBookingDates(booking["booking_date"]);
+    List<int> sessions = parseSessionNumbers(booking["session_number"]);
 
-    bool showCancelButton = canCancel(status, date, time);
-    bool datePassed = isDatePassed(date, time);
-    String serviceName = getServiceName(treatmentId);
-    String displayStatus = getDisplayStatus(status);
+    String status = booking["status"] ?? "booked";
     bool isCancelled = status.toLowerCase() == "cancelled";
-    bool isUpcoming = status.toLowerCase() == "booked" && !datePassed;
+    String userName = getUserName(booking["user_id"]?.toString());
+    String serviceName = getServiceName(booking["treatment_id"]);
 
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      margin: const EdgeInsets.only(bottom: 12),
+    // Create session list from the correct data structure
+    List<Map<String, dynamic>> sessionList = [];
+
+    if (slotsList.isNotEmpty && sessions.isNotEmpty) {
+      int minLength = slotsList.length < sessions.length ? slotsList.length : sessions.length;
+
+      for (int i = 0; i < minLength; i++) {
+        sessionList.add({
+          'number': sessions[i],
+          'date': slotsList[i]["date"],
+          'time': slotsList[i]["time"],
+        });
+      }
+    }
+
+    // ✅ Check if there are any sessions that cannot be cancelled (less than 3 hours before)
+    bool hasNonCancellableUpcomingSession = false;
+    String nonCancellableMessage = "";
+
+    for (var session in sessionList) {
+      if (!isCancelled &&
+          !isSessionPast(session['date'], session['time']) &&
+          !canCancelSession(session['date'], session['time']) &&
+          status.toLowerCase() == "booked") {
+        hasNonCancellableUpcomingSession = true;
+        nonCancellableMessage = getCancellationMessage(session['date'], session['time']);
+        break;
+      }
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withOpacity(0.05),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
         ],
       ),
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(20),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(20),
-          onTap: () {
-            // Optional: Add detail view
-          },
-          child: Padding(
-            padding: const EdgeInsets.all(18),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: isCancelled ? Colors.grey[50] : const Color(0xFFF0FDF4),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(16),
+                topRight: Radius.circular(16),
+              ),
+            ),
+            child: Row(
               children: [
-                // Header row
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Icon
-                    Container(
-                      width: 48,
-                      height: 48,
-                      decoration: BoxDecoration(
-                        color: isCancelled
-                            ? Colors.grey[50]
-                            : const Color(0xFFF0FDF4),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Icon(
-                        treatmentId != null && treatmentId > 0
-                            ? Icons.medical_services_outlined
-                            : Icons.person_outline,
-                        size: 24,
-                        color: isCancelled ? Colors.grey[500] : const Color(0xFF10B981),
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-
-                    // Content
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            treatmentId != null && treatmentId > 0 ? serviceName : "Doctor Consultation",
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                              color: isCancelled ? Colors.grey[500] : const Color(0xFF1A1A1A),
-                              decoration: isCancelled ? TextDecoration.lineThrough : null,
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Row(
-                            children: [
-                              Icon(Icons.calendar_today, size: 12, color: Colors.grey[500]),
-                              const SizedBox(width: 4),
-                              Text(
-                                formatDate(date),
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  color: isCancelled ? Colors.grey[500] : Colors.grey[700],
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Icon(Icons.access_time, size: 12, color: Colors.grey[500]),
-                              const SizedBox(width: 4),
-                              Text(
-                                time,
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  color: isCancelled ? Colors.grey[500] : Colors.grey[700],
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          Row(
-                            children: [
-                              Icon(Icons.repeat, size: 12, color: Colors.grey[500]),
-                              const SizedBox(width: 4),
-                              Text(
-                                "Session $sessionNumber",
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: isCancelled ? Colors.grey[500] : Colors.grey[600],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    // Status badge
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: isCancelled
-                            ? Colors.grey[100]
-                            : isUpcoming
-                            ? const Color(0xFFF0FDF4)
-                            : Colors.grey[100],
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        displayStatus,
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: isCancelled
-                              ? Colors.grey[500]
-                              : isUpcoming
-                              ? const Color(0xFF10B981)
-                              : Colors.grey[500],
-                        ),
-                      ),
-                    ),
-                  ],
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: isCancelled ? Colors.grey[200] : const Color(0xFF10B981),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    booking["treatment_id"] != null && booking["treatment_id"] != 0
+                        ? Icons.medical_services
+                        : Icons.person,
+                    size: 20,
+                    color: isCancelled ? Colors.grey[500] : Colors.white,
+                  ),
                 ),
-
-                const SizedBox(height: 14),
-
-                // Divider
-                Container(height: 1, color: Colors.grey[100]),
-
-                const SizedBox(height: 12),
-
-                // Footer
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(Icons.event_note, size: 11, color: Colors.grey[400]),
-                        const SizedBox(width: 4),
-                        Text(
-                          "Booked ${_getRelativeTime(createdAt)}",
-                          style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        userName,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: isCancelled ? Colors.grey[500] : Colors.black87,
                         ),
-                      ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        serviceName,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: isCancelled ? Colors.grey[400] : Colors.grey[600],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isCancelled
+                        ? Colors.grey[200]
+                        : const Color(0xFF10B981).withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    isCancelled ? "Cancelled" : "Active",
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: isCancelled ? Colors.grey[500] : const Color(0xFF10B981),
                     ),
-
-                    if (showCancelButton)
-                      GestureDetector(
-                        onTap: () => _showCancelDialog(bookingId, date, time),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: Colors.red[50],
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            "Cancel",
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.red[600],
-                            ),
-                          ),
-                        ),
-                      ),
-
-                    if (!showCancelButton && !isCancelled && datePassed)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: Colors.grey[100],
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          "Expired",
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w500,
-                            color: Colors.grey[500],
-                          ),
-                        ),
-                      ),
-                  ],
+                  ),
                 ),
               ],
             ),
           ),
-        ),
+
+          // Sessions List
+          if (sessionList.isNotEmpty)
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: sessionList.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                var session = sessionList[index];
+                bool isPast = isSessionPast(session['date'], session['time']);
+                bool canCancel = canCancelSession(session['date'], session['time']);
+
+                return _buildSessionItem(
+                  sessionNumber: session['number'],
+                  date: session['date'],
+                  time: session['time'],
+                  isPast: isPast,
+                  isCancelled: isCancelled,
+                  canCancel: !isCancelled && !isPast && canCancel && status.toLowerCase() == "booked",
+                  bookingId: booking["id"],
+                );
+              },
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Center(
+                child: Text(
+                  "No session details available",
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.grey[500],
+                  ),
+                ),
+              ),
+            ),
+
+          // ✅ NOTE AT THE BOTTOM OF THE PAGE - Shows when there are non-cancellable upcoming sessions
+          if (hasNonCancellableUpcomingSession && !isCancelled)
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.orange[50],
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.orange[200]!),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, size: 16, color: Colors.orange[700]),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        nonCancellableMessage,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.orange[700],
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          // Small footer spacing
+          const SizedBox(height: 8),
+        ],
       ),
     );
   }
 
-  String _getRelativeTime(String createdAt) {
-    try {
-      DateTime created = DateTime.parse(createdAt);
-      DateTime now = DateTime.now();
-      Duration diff = now.difference(created);
+  Widget _buildSessionItem({
+    required int sessionNumber,
+    required String? date,
+    required String? time,
+    required bool isPast,
+    required bool isCancelled,
+    required bool canCancel,
+    required int bookingId,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          // Session number circle
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: isPast || isCancelled
+                  ? Colors.grey[100]
+                  : const Color(0xFF10B981).withOpacity(0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Center(
+              child: Text(
+                sessionNumber.toString(),
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: isPast || isCancelled ? Colors.grey[400] : const Color(0xFF10B981),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
 
-      if (diff.inDays > 30) return formatDateTime(createdAt).split(',')[0];
-      if (diff.inDays > 0) return "${diff.inDays} days ago";
-      if (diff.inHours > 0) return "${diff.inHours} hours ago";
-      if (diff.inMinutes > 0) return "${diff.inMinutes} min ago";
-      return "just now";
-    } catch (e) {
-      return "";
-    }
+          // Date and time
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "Session $sessionNumber",
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: isPast || isCancelled ? Colors.grey[400] : Colors.black87,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                if (date != null && time != null)
+                  Text(
+                    "${formatDate(date)} • ${formatTime(time)}",
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: isPast || isCancelled ? Colors.grey[400] : Colors.grey[500],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+
+          // Status or action
+          if (isCancelled)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.grey[100],
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                "Cancelled",
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.grey[500],
+                ),
+              ),
+            )
+          else if (isPast)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF10B981).withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                "Completed",
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w500,
+                  color: const Color(0xFF10B981),
+                ),
+              ),
+            )
+          else if (canCancel)
+              GestureDetector(
+                onTap: () => _showCancelDialog(bookingId, sessionNumber, date!, time!),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.red[50],
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    "Cancel",
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.red[600],
+                    ),
+                  ),
+                ),
+              )
+            else
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  "Upcoming",
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.grey[500],
+                  ),
+                ),
+              ),
+        ],
+      ),
+    );
   }
 
-  void _showCancelDialog(int bookingId, String date, String time) async {
+  void _showCancelDialog(int bookingId, int sessionNum, String date, String time) async {
     bool? confirm = await showDialog(
       context: context,
-      builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        child: Container(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: Colors.red[50],
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(Icons.warning_outlined, size: 28, color: Colors.red[600]),
-              ),
-              const SizedBox(height: 20),
-              Text(
-                "Cancel Booking",
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.grey[900],
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                "Are you sure you want to cancel your appointment on ${formatDate(date)} at $time?",
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-              ),
-              const SizedBox(height: 24),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextButton(
-                      onPressed: () => Navigator.pop(context, false),
-                      style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      child: Text(
-                        "Keep it",
-                        style: TextStyle(fontSize: 15, color: Colors.grey[600]),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: () => Navigator.pop(context, true),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.red[600],
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      child: const Text(
-                        "Cancel",
-                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text("Cancel Session $sessionNum"),
+        content: Text(
+          "Are you sure you want to cancel session $sessionNum on ${formatDate(date)} at ${formatTime(time)}?\n\nNote: This action cannot be undone.",
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Keep"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text("Cancel Session"),
+          ),
+        ],
       ),
     );
 
     if (confirm == true) {
-      await ApiService().cancelBooking(bookingId, "cancelled");
-      await fetchBookings();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text("Booking cancelled"),
-            backgroundColor: Colors.black87,
-            duration: const Duration(seconds: 2),
-            behavior: SnackBarBehavior.floating,
-            margin: const EdgeInsets.all(16),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-        );
+      try {
+        await ApiService().cancelBooking(bookingId, "cancelled");
+        await fetchBookings();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Session cancelled successfully"),
+              backgroundColor: Colors.black87,
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Error cancelling session: $e"),
+              backgroundColor: Colors.red,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
       }
     }
   }

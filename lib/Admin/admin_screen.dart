@@ -106,18 +106,7 @@ class _AdminScreenState extends State<AdminScreen> {
         isLoading = false;
       });
 
-      // Debug print
-      print("""
-      =================================
-      === DASHBOARD STATS ===
-      Today Active: $todayActive
-      Today Cancelled: $todayCancelled
-      Total Active: $totalActive
-      - Booked: $totalBooked
-      - Completed: $totalCompleted
-      Total Cancelled: $totalCancelled
-      =================================
-      """);
+
 
     } catch (e) {
       print("Error loading stats: $e");
@@ -293,7 +282,7 @@ class _AdminScreenState extends State<AdminScreen> {
             ),
           ),
 
-          const SizedBox(height: 24),
+          const SizedBox(height: 18),
 
           // Stats Cards
           Padding(
@@ -309,8 +298,7 @@ class _AdminScreenState extends State<AdminScreen> {
                   ),
                 ),
               ),
-            )
-                : Column(
+            ) : Column(
               children: [
                 Row(
                   children: [
@@ -368,7 +356,7 @@ class _AdminScreenState extends State<AdminScreen> {
             ),
           ),
 
-          const SizedBox(height: 24),
+          const SizedBox(height: 8),
 
           // Feature Card
           Padding(
@@ -416,7 +404,7 @@ class _AdminScreenState extends State<AdminScreen> {
                           ),
                           SizedBox(height: 4),
                           Text(
-                            "View and manage all patient appointments",
+                            "View and manage all Date Appointments",
                             style: TextStyle(
                               color: Colors.white70,
                               fontSize: 12,
@@ -432,13 +420,15 @@ class _AdminScreenState extends State<AdminScreen> {
             ),
           ),
 
-          const SizedBox(height: 24),
+          const SizedBox(height: 8),
 
           // Menu Grid
           Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: GridView.count(
+                physics: ScrollPhysics(),
+                scrollDirection: Axis.vertical,
                 crossAxisCount: 2,
                 crossAxisSpacing: 16,
                 mainAxisSpacing: 16,

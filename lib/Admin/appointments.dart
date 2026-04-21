@@ -1,7 +1,11 @@
+import 'dart:convert';
+
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import '../api/api_service.dart';
+import '../service.dart';
 
 class AppointmentsScreen extends StatefulWidget {
   const AppointmentsScreen({super.key});
@@ -14,7 +18,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
   bool isLoading = true;
   int selectedFilterIndex = 0; // 0: All, 1: Booked, 2: Completed, 3: Cancelled
   DateTime? selectedDate; // Date filter
-
   List services = [];
   List<Map<String, dynamic>> appointments = [];
   Map<String, dynamic> userCache = {};
@@ -57,6 +60,42 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
       slot["showDropdown"] = false;
       slot["selectedServiceId"] = slot["treatment_id"]?.toString();
 
+      // CRITICAL FIX: Parse booking_date properly and keep ALL slots
+      if (slot["booking_date"] != null) {
+        try {
+          if (slot["booking_date"] is String) {
+            final parsed = jsonDecode(slot["booking_date"]);
+            if (parsed is List) {
+              slot["booking_date"] = parsed;
+              print("✅ Parsed booking_date: ${slot["booking_date"]}");
+              print("📊 Number of slots: ${parsed.length}");
+            }
+          } else if (slot["booking_date"] is List) {
+            print("✅ booking_date is already a list: ${slot["booking_date"]}");
+            print("📊 Number of slots: ${slot["booking_date"].length}");
+          }
+        } catch (e) {
+          print("Error parsing booking_date: $e");
+        }
+      }
+
+      // Parse session_number properly
+      if (slot["session_number"] != null) {
+        try {
+          if (slot["session_number"] is String) {
+            final parsed = jsonDecode(slot["session_number"]);
+            if (parsed is List) {
+              slot["session_number"] = parsed;
+              print("✅ Parsed session_number: ${slot["session_number"]}");
+            }
+          } else if (slot["session_number"] is List) {
+            print("✅ session_number is already a list: ${slot["session_number"]}");
+          }
+        } catch (e) {
+          print("Error parsing session_number: $e");
+        }
+      }
+
       if (slot["treatment_id"] != null) {
         try {
           final res = await ApiService().getServiceDetails(slot["treatment_id"]);
@@ -76,26 +115,49 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
       // Status filter
       bool statusMatch = false;
       switch(selectedFilterIndex) {
-        case 0: // All
+        case 0:
           statusMatch = true;
           break;
-        case 1: // Booked
-          statusMatch = e["status"].toLowerCase() == "booked";
+        case 1:
+          statusMatch = e["status"].toString().toLowerCase() == "booked";
           break;
-        case 2: // Completed
-          statusMatch = e["status"].toLowerCase() == "completed";
+        case 2:
+          statusMatch = e["status"].toString().toLowerCase() == "completed";
           break;
-        case 3: // Cancelled
-          statusMatch = e["status"].toLowerCase() == "cancelled";
+        case 3:
+          statusMatch = e["status"].toString().toLowerCase() == "cancelled";
           break;
       }
 
       // Date filter
-      final appointmentDate = DateTime.parse(e["booking_date"]);
-      final dateMatch = selectedDate == null ||
-          (appointmentDate.year == selectedDate!.year &&
-              appointmentDate.month == selectedDate!.month &&
-              appointmentDate.day == selectedDate!.day);
+      bool dateMatch = true;
+      if (selectedDate != null) {
+        try {
+          var bookingData = e["booking_date"];
+          List<Map<String, dynamic>> slotsList = [];
+
+          if (bookingData is List) {
+            slotsList = List<Map<String, dynamic>>.from(bookingData);
+          }
+
+          if (slotsList.isNotEmpty) {
+            final lastDateStr = slotsList.last["date"]?.toString() ?? "";
+            if (lastDateStr.isNotEmpty) {
+              final appointmentDate = DateTime.parse(lastDateStr);
+              dateMatch = appointmentDate.year == selectedDate!.year &&
+                  appointmentDate.month == selectedDate!.month &&
+                  appointmentDate.day == selectedDate!.day;
+            } else {
+              dateMatch = false;
+            }
+          } else {
+            dateMatch = false;
+          }
+        } catch (e) {
+          print("Date filter error: $e");
+          dateMatch = false;
+        }
+      }
 
       return statusMatch && dateMatch;
     }).toList();
@@ -134,6 +196,37 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
   Future<void> openBookingModal(Map<String, dynamic> appt) async {
     DateTime? selectedDateModal;
     String? selectedSlot;
+
+    List<int> currentSessions = [];
+    dynamic sessionData = appt["session_number"];
+
+    if (sessionData == null) {
+      currentSessions = [];
+    } else if (sessionData is List) {
+      currentSessions = sessionData.map((e) {
+        if (e is int) return e;
+        if (e is String) return int.parse(e);
+        return 0;
+      }).toList();
+    } else if (sessionData is String) {
+      try {
+        if (sessionData.trim().startsWith('[')) {
+          List<dynamic> parsed = jsonDecode(sessionData);
+          currentSessions = parsed.map((e) {
+            if (e is int) return e;
+            if (e is String) return int.parse(e);
+            return 0;
+          }).toList();
+        } else {
+          currentSessions = [int.parse(sessionData)];
+        }
+      } catch (e) {
+        currentSessions = [];
+      }
+    }
+
+    int lastSession = currentSessions.isNotEmpty ? currentSessions.last : 0;
+    int nextSession = lastSession + 1;
 
     await showModalBottomSheet(
       context: context,
@@ -174,7 +267,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          "Session ${(appt["session_number"] ?? 0) + 1}",
+                          "Session $nextSession",
                           style: GoogleFonts.poppins(
                             fontSize: 14,
                             color: primaryMuted,
@@ -182,7 +275,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                         ),
                         const SizedBox(height: 24),
 
-                        // Date Picker
                         GestureDetector(
                           onTap: () async {
                             DateTime? picked = await showDatePicker(
@@ -231,7 +323,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
 
                         const SizedBox(height: 24),
 
-                        // Morning Slots
                         Text(
                           "Morning",
                           style: GoogleFonts.poppins(
@@ -279,7 +370,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
 
                         const SizedBox(height: 20),
 
-                        // Afternoon Slots
                         Text(
                           "Afternoon",
                           style: GoogleFonts.poppins(
@@ -327,7 +417,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
 
                         const SizedBox(height: 28),
 
-                        // Confirm Button
                         SizedBox(
                           width: double.infinity,
                           child: ElevatedButton(
@@ -335,35 +424,110 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                                 ? null
                                 : () async {
                               String formattedDate = DateFormat("yyyy-MM-dd").format(selectedDateModal!);
-                              int session = (appt["session_number"] ?? 0) + 1;
 
                               try {
+                                List<Map<String, dynamic>> slotsList = [];
+
+                                if (appt["booking_date"] != null) {
+                                  try {
+                                    var data = appt["booking_date"];
+                                    if (data is String) {
+                                      data = jsonDecode(data);
+                                    }
+                                    if (data is List) {
+                                      slotsList = List<Map<String, dynamic>>.from(data);
+                                    }
+                                  } catch (e) {
+                                    slotsList = [];
+                                  }
+                                }
+
+                                List<int> existingSessions = [];
+                                var sessionData = appt["session_number"];
+                                if (sessionData is List) {
+                                  existingSessions = List<int>.from(sessionData.map((e) => int.parse(e.toString())));
+                                } else if (sessionData is String) {
+                                  try {
+                                    List<dynamic> parsed = jsonDecode(sessionData);
+                                    existingSessions = parsed.map((e) => int.parse(e.toString())).toList();
+                                  } catch (e) {
+                                    existingSessions = [];
+                                  }
+                                }
+
+                                Map<String, String> newSlot = {
+                                  "date": formattedDate,
+                                  "time": selectedSlot!
+                                };
+
+                                bool alreadyExists = slotsList.any((s) =>
+                                s["date"] == newSlot["date"] && s["time"] == newSlot["time"]);
+
+                                if (alreadyExists) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text("❌ This slot is already booked!")),
+                                  );
+                                  return;
+                                }
+
+                                int newSessionNumber = existingSessions.isNotEmpty
+                                    ? existingSessions.last + 1
+                                    : 1;
+
                                 await ApiService().updateSessions(
-                                  appt["id"],
-                                  session,
-                                  int.parse(appt["selectedServiceId"]),
-                                  formattedDate,
-                                  selectedSlot!,
+                                  appt["id"].toString(),
+                                  [newSessionNumber],
+                                  int.parse(appt["selectedServiceId"].toString()),
+                                  [newSlot],
                                   DateTime.now(),
                                 );
 
-                                setState(() {
-                                  appt["booking_date"] = formattedDate;
-                                  appt["slot_time"] = selectedSlot;
-                                  appt["session_number"] = session;
-                                });
+                                final appointmentIndex = appointments.indexWhere((a) => a["id"] == appt["id"]);
+
+                                if (appointmentIndex != -1) {
+                                  setState(() {
+                                    List<Map<String, dynamic>> updatedSlots = List.from(appointments[appointmentIndex]["booking_date"] ?? []);
+                                    List<int> updatedSessions = List.from(appointments[appointmentIndex]["session_number"] ?? []);
+
+                                    updatedSlots.add(newSlot);
+                                    updatedSessions.add(newSessionNumber);
+
+                                    appointments[appointmentIndex]["booking_date"] = updatedSlots;
+                                    appointments[appointmentIndex]["session_number"] = updatedSessions;
+
+                                    if (appointments[appointmentIndex]["treatment_id"] == null) {
+                                      appointments[appointmentIndex]["treatment_id"] = int.parse(appt["selectedServiceId"].toString());
+                                      appointments[appointmentIndex]["serviceTitle"] = appt["serviceTitle"];
+                                    }
+                                  });
+                                }
+
+                                await ApiService().sendNotificationToUser(
+                                  userId: appt["user_id"].toString(),
+                                  serviceName: appt["serviceTitle"].toString(),
+                                  formattedDate: formattedDate,
+                                  newSessionNumber: newSessionNumber,
+                                  selectedSlot: selectedSlot!,
+                                );
 
                                 Navigator.pop(context);
+
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
-                                    content: Text("Follow-up booked", style: GoogleFonts.poppins()),
-                                    backgroundColor: successMuted,
-                                    behavior: SnackBarBehavior.floating,
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    duration: const Duration(seconds: 5),
+                                    content: Text("✅ Follow-up booked successfully! Session $newSessionNumber"),
                                   ),
                                 );
+
+                                await loadAppointments();
+
                               } catch (e) {
                                 print("Error: $e");
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text("Error booking follow-up: ${e.toString()}"),
+                                  ),
+                                );
                               }
                             },
                             style: ElevatedButton.styleFrom(
@@ -395,14 +559,96 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
     );
   }
 
-  Widget appointmentCard(Map<String, dynamic> appt) {
+  Widget appointmentCard(Map<String, dynamic> appt, int cardIndex) {
     final user = appt["userDetails"];
     String name = user?["name"] ?? appt["user_id"];
     String phone = user?["phone_number"] ?? "";
-    String formattedDate = DateFormat("dd MMM yyyy").format(DateTime.parse(appt["booking_date"]));
-    bool isBooked = appt["status"].toLowerCase() == "booked";
-    bool isCompleted = appt["status"].toLowerCase() == "completed";
-    bool isCancelled = appt["status"].toLowerCase() == "cancelled";
+
+    // CRITICAL FIX: Parse ALL slots correctly
+    List<Map<String, dynamic>> slotsList = [];
+
+    try {
+      var rawData = appt["booking_date"];
+
+      print("🔍 Raw booking_date for card: $rawData");
+      print("🔍 Type: ${rawData.runtimeType}");
+
+      if (rawData != null) {
+        if (rawData is List) {
+          slotsList = List<Map<String, dynamic>>.from(rawData);
+          print("✅ Got ${slotsList.length} slots from List");
+        } else if (rawData is String && rawData.isNotEmpty) {
+          final decoded = jsonDecode(rawData);
+          if (decoded is List) {
+            slotsList = List<Map<String, dynamic>>.from(decoded);
+            print("✅ Got ${slotsList.length} slots from JSON string");
+          }
+        }
+      }
+
+      // Debug: Print all slots
+      for (int i = 0; i < slotsList.length; i++) {
+        print("📅 Slot ${i+1}: ${slotsList[i]}");
+      }
+
+    } catch (e) {
+      print("❌ ERROR parsing booking_date in card: $e");
+    }
+
+    String displayDate = "";
+    String displaySlot = "";
+    int currentSession = 0;
+
+    if (slotsList.isNotEmpty) {
+      final lastSlot = slotsList.last;
+      displayDate = lastSlot["date"]?.toString() ?? "";
+      displaySlot = lastSlot["time"]?.toString() ?? "";
+    }
+
+    // Parse sessions
+    List<int> sessions = [];
+
+    try {
+      var sessionData = appt["session_number"];
+
+      if (sessionData != null) {
+        if (sessionData is List) {
+          sessions = sessionData.map((e) => int.parse(e.toString())).toList();
+        } else if (sessionData is String && sessionData.isNotEmpty) {
+          if (sessionData.trim().startsWith('[')) {
+            final decoded = jsonDecode(sessionData);
+            if (decoded is List) {
+              sessions = decoded.map((e) => int.parse(e.toString())).toList();
+            }
+          } else {
+            sessions = [int.parse(sessionData)];
+          }
+        }
+      }
+
+      print("✅ Sessions: $sessions");
+
+    } catch (e) {
+      print("❌ Session parse error: $e");
+    }
+
+    if (sessions.isNotEmpty) {
+      currentSession = sessions.last;
+    }
+
+    String formattedDate = "No date";
+    if (displayDate.isNotEmpty) {
+      try {
+        final parsed = DateTime.parse(displayDate);
+        formattedDate = DateFormat("dd MMM yyyy").format(parsed);
+      } catch (e) {
+        formattedDate = displayDate;
+      }
+    }
+
+    bool isBooked = appt["status"].toString().toLowerCase() == "booked";
+    bool isCompleted = appt["status"].toString().toLowerCase() == "completed";
+    bool isCancelled = appt["status"].toString().toLowerCase() == "cancelled";
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
@@ -424,7 +670,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Header Row
                 Row(
                   children: [
                     Container(
@@ -482,7 +727,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                         ],
                       ),
                     ),
-                    // Status Badge
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                       decoration: BoxDecoration(
@@ -510,7 +754,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                           ),
                           const SizedBox(width: 6),
                           Text(
-                            appt["status"].toUpperCase(),
+                            appt["status"].toString().toUpperCase(),
                             style: GoogleFonts.poppins(
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
@@ -529,7 +773,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
 
                 const SizedBox(height: 16),
 
-                // Date and Time Row
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
@@ -553,10 +796,10 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                       Icon(Icons.access_time, size: 14, color: primaryMuted),
                       const SizedBox(width: 6),
                       Text(
-                        appt["slot_time"],
+                        displaySlot.isNotEmpty ? displaySlot : "No time",
                         style: GoogleFonts.poppins(fontSize: 13, color: Colors.grey[700]),
                       ),
-                      if (appt["session_number"] != null && appt["session_number"] > 0) ...[
+                      if (currentSession > 0) ...[
                         Container(
                           width: 1,
                           height: 12,
@@ -570,8 +813,12 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: Text(
-                            "S${appt["session_number"]}",
-                            style: GoogleFonts.poppins(fontSize: 11, fontWeight: FontWeight.w500, color: primaryMuted),
+                            "S$currentSession",
+                            style: GoogleFonts.poppins(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                                color: primaryMuted
+                            ),
                           ),
                         ),
                       ],
@@ -581,9 +828,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
 
                 const SizedBox(height: 16),
 
-                // Action Section - Only show buttons if NOT completed and NOT cancelled
                 if (!isCompleted && !isCancelled) ...[
-                  // If treatment exists (has been visited/treated)
                   if (appt["treatment_id"] != null) ...[
                     Container(
                       padding: const EdgeInsets.all(12),
@@ -610,74 +855,187 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    Row(
+                    Column(
                       children: [
-                        SizedBox(
-                          width: MediaQuery.of(context).size.width / 2.5,
-                          child: ElevatedButton.icon(
-                            onPressed: () => openBookingModal(appt),
-                            icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
-                            label: Text(
-                              "Book Follow-up",
-                              style: GoogleFonts.poppins(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w500,
-                                color: Colors.white,
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: () => openBookingModal(appt),
+                                icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
+                                label: Text("Follow-up", style: GoogleFonts.poppins(fontSize: 14,
+                                    color: Colors.white,
+                                    letterSpacing: 0.6,
+                                    fontWeight: FontWeight.w600
+                                )),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.green,
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                ),
                               ),
                             ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.green,
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: () => openRescheduleModal(appt, cardIndex),
+                                icon: const Icon(Icons.edit_calendar, size: 16, color: Colors.white),
+                                label: Text("Reschedule", style: GoogleFonts.poppins(fontSize: 14,
+                                    color: Colors.white,
+                                    letterSpacing: 0.6,
+                                    fontWeight: FontWeight.w600
+                                )),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.orange,
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                ),
                               ),
                             ),
-                          ),
+                          ],
                         ),
-                        Expanded(
-                          child: Container(
-                            margin: const EdgeInsets.only(left: 12),
-                            child: ElevatedButton(
-                              onPressed: () async {
-                                var id = appt["id"];
-                                await ApiService().markSlotCompleted(id);
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: () async {
+                                  bool confirm = await showDialog(
+                                    context: context,
+                                    builder: (_) => Dialog(
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(20),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Container(
+                                              width: 60,
+                                              height: 60,
+                                              decoration: BoxDecoration(
+                                                color: Colors.red.withOpacity(0.1),
+                                                shape: BoxShape.circle,
+                                              ),
+                                              child: const Icon(
+                                                Icons.warning_amber_rounded,
+                                                color: Colors.red,
+                                                size: 30,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 16),
+                                            Text(
+                                              "Cancel Appointment",
+                                              style: GoogleFonts.poppins(
+                                                fontSize: 18,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 8),
+                                            Text(
+                                              "Are you sure you want to cancel this appointment?",
+                                              textAlign: TextAlign.center,
+                                              style: GoogleFonts.poppins(
+                                                fontSize: 13,
+                                                color: Colors.grey[600],
+                                              ),
+                                            ),
+                                            const SizedBox(height: 20),
+                                            Row(
+                                              children: [
+                                                Expanded(
+                                                  child: OutlinedButton(
+                                                    onPressed: () => Navigator.pop(context, false),
+                                                    style: OutlinedButton.styleFrom(
+                                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                                      shape: RoundedRectangleBorder(
+                                                        borderRadius: BorderRadius.circular(12),
+                                                      ),
+                                                    ),
+                                                    child: Text(
+                                                      "No",
+                                                      style: GoogleFonts.poppins(
+                                                        fontWeight: FontWeight.w500,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 10),
+                                                Expanded(
+                                                  child: ElevatedButton(
+                                                    onPressed: () async {
+                                                      await ApiService().cancelBooking(appt["id"], "cancelled");
+                                                      Navigator.pop(context);
+                                                      await ApiService().sendBookingCancellation(
+                                                        userId: appt["user_id"],
+                                                        date: selectedDate.toString(),
+                                                        sessionNumber: currentSession,
+                                                        time: ""
+                                                      );
+                                                      await loadAppointments();
+                                                    },
+                                                    style: ElevatedButton.styleFrom(
+                                                      backgroundColor: Colors.red,
+                                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                                      shape: RoundedRectangleBorder(
+                                                        borderRadius: BorderRadius.circular(12),
+                                                      ),
+                                                    ),
+                                                    child: Text(
+                                                      "Yes, Cancel",
+                                                      style: GoogleFonts.poppins(
+                                                        fontWeight: FontWeight.w500,
+                                                        color: Colors.white,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  );
 
-                                // Update local state
-                                setState(() {
-                                  appt["status"] = "completed";
-                                });
-
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text("Marked as completed", style: GoogleFonts.poppins()),
-                                    backgroundColor: successMuted,
-                                    behavior: SnackBarBehavior.floating,
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                  ),
-                                );
-                              },
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: successMuted,
-                                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(14),
-                                ),
-                              ),
-                              child: Text(
-                                "Complete",
-                                style: GoogleFonts.poppins(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w500,
-                                  color: Colors.white,
+                                  if (confirm == true) {
+                                    setState(() => appt["status"] = "cancelled");
+                                  }
+                                },
+                                icon: const Icon(Icons.cancel, size: 16, color: Colors.white),
+                                label: Text("Cancel", style: GoogleFonts.poppins(fontSize: 14,
+                                    color: Colors.white,
+                                    letterSpacing: 0.6,
+                                    fontWeight: FontWeight.w600
+                                )),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.red,
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
                                 ),
                               ),
                             ),
-                          ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: () async {
+                                  await ApiService().markSlotCompleted(appt["id"]);
+                                  setState(() => appt["status"] = "completed");
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: successMuted,
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                ),
+                                child: Text("Complete", style: GoogleFonts.poppins(fontSize: 13.8,
+                                    color: Colors.white,
+                                    letterSpacing: 0.6,
+                                    fontWeight: FontWeight.w600
+                                )),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
-                    ),
+                    )
                   ]
-                  // If not visited yet
                   else if (appt["isVisited"] != true && isBooked) ...[
                     Row(
                       children: [
@@ -754,7 +1112,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                     ),
                   ],
                 ]
-                // Show message for completed appointments
                 else if (isCompleted) ...[
                   Container(
                     padding: const EdgeInsets.all(12),
@@ -783,7 +1140,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                     ),
                   ),
                 ]
-                // Show message for cancelled appointments
                 else if (isCancelled) ...[
                     Container(
                       padding: const EdgeInsets.all(12),
@@ -811,7 +1167,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                     ),
                   ],
 
-                // Dropdown for treatment selection
                 if (appt["showDropdown"] == true && appt["treatment_id"] == null && !isCompleted && !isCancelled) ...[
                   const SizedBox(height: 16),
                   Text(
@@ -902,6 +1257,283 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
     );
   }
 
+  Future<void> openRescheduleModal(
+      Map<String, dynamic> appt, int cardindex,
+      ) async {
+    DateTime? selectedDateModal;
+    String? selectedSlot;
+
+    List<Map<String, dynamic>> slotsList = [];
+
+    try {
+      var bookingData = appt["booking_date"];
+
+      if (bookingData != null) {
+        if (bookingData is List) {
+          slotsList = List<Map<String, dynamic>>.from(bookingData);
+        } else if (bookingData is String && bookingData.isNotEmpty) {
+          final decoded = jsonDecode(bookingData);
+          if (decoded is List) {
+            slotsList = List<Map<String, dynamic>>.from(decoded);
+          }
+        }
+      }
+    } catch (e) {
+      print("❌ Parse error: $e");
+      return;
+    }
+
+    if (slotsList.isEmpty) return;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Container(
+              decoration: BoxDecoration(
+                color: Colors.grey[100],
+                borderRadius:
+                const BorderRadius.vertical(top: Radius.circular(28)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+
+                    // TITLE
+                    Text(
+                      "Reschedule Appointment",
+                      style: GoogleFonts.poppins(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+
+                    const SizedBox(height: 8),
+
+                    // INFO (shows last session)
+                    Text(
+                      "Rescheduling Last Session (${slotsList.length})",
+                      style: GoogleFonts.poppins(
+                        fontSize: 14,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    // DATE PICKER
+                    GestureDetector(
+                      onTap: () async {
+                        DateTime? picked = await showDatePicker(
+                          context: context,
+                          initialDate: DateTime.now(),
+                          firstDate: DateTime.now(),
+                          lastDate: DateTime(2100),
+                        );
+
+                        if (picked != null) {
+                          setModalState(() => selectedDateModal = picked);
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.calendar_today, color: primaryMuted),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                selectedDateModal == null
+                                    ? "Select New Date"
+                                    : DateFormat("dd MMM yyyy")
+                                    .format(selectedDateModal!),
+                                style: GoogleFonts.poppins(fontSize: 14),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    // MORNING
+                    Text("Morning", style: GoogleFonts.poppins()),
+                    const SizedBox(height: 10),
+
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: morningSlots.map((slot) {
+                        final isSelected = selectedSlot == slot;
+
+                        return GestureDetector(
+                          onTap: () =>
+                              setModalState(() => selectedSlot = slot),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? primaryMuted
+                                  : Colors.white,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.grey[300]!),
+                            ),
+                            child: Text(
+                              slot,
+                              style: GoogleFonts.poppins(
+                                fontSize: 12,
+                                color: isSelected
+                                    ? Colors.white
+                                    : Colors.black,
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    // AFTERNOON
+                    Text("Afternoon", style: GoogleFonts.poppins()),
+                    const SizedBox(height: 10),
+
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: afternoonSlots.map((slot) {
+                        final isSelected = selectedSlot == slot;
+
+                        return GestureDetector(
+                          onTap: () =>
+                              setModalState(() => selectedSlot = slot),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? primaryMuted
+                                  : Colors.white,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.grey[300]!),
+                            ),
+                            child: Text(
+                              slot,
+                              style: GoogleFonts.poppins(
+                                fontSize: 12,
+                                color: isSelected
+                                    ? Colors.white
+                                    : Colors.black,
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+
+                    const SizedBox(height: 25),
+
+                    // CONFIRM BUTTON
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: (selectedDateModal == null ||
+                            selectedSlot == null)
+                            ? null
+                            : () async {
+                          try {
+                            String formattedDate =
+                            DateFormat("yyyy-MM-dd")
+                                .format(selectedDateModal!);
+
+                            String fixedTime = selectedSlot!
+                                .replaceAll("Am", "AM")
+                                .replaceAll("Pm", "PM");
+
+                            // ✅ COPY LIST
+                            List<Map<String, dynamic>> updatedSlots =
+                            List<Map<String, dynamic>>.from(slotsList);
+
+                            // 🔥 ALWAYS UPDATE LAST SESSION
+                            updatedSlots[updatedSlots.length - 1] = {
+                              "date": formattedDate,
+                              "time": fixedTime,
+                            };
+
+                            await ApiService().rescheduleDate(
+                              appt["id"],
+                              updatedSlots,
+                            );
+                            await ApiService().sendNotificationToUser(
+                              userId: appt["user_id"].toString(),
+                              serviceName: appt["serviceTitle"].toString(),
+                              formattedDate: formattedDate,
+                              newSessionNumber: slotsList.length,
+                              selectedSlot: selectedSlot!,
+                            );
+                            // ✅ UPDATE CORRECT APPOINTMENT
+                            setState(() {
+                              final index = appointments.indexWhere(
+                                      (a) => a["id"] == appt["id"]);
+
+                              if (index != -1) {
+                                appointments[index]["booking_date"] =
+                                    updatedSlots;
+                              }
+                            });
+
+                            Navigator.pop(context);
+
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content:
+                                Text("✅ Rescheduled successfully"),
+                                backgroundColor: Colors.green,
+                              ),
+                            );
+
+                            await loadAppointments();
+                          } catch (e) {
+                            print("❌ Error: $e");
+                          }
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: primaryMuted,
+                          padding:
+                          const EdgeInsets.symmetric(vertical: 16),
+                        ),
+                        child: Text(
+                          "Confirm Reschedule",
+                          style: GoogleFonts.poppins(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final list = filteredAppointments;
@@ -911,7 +1543,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Header
             Container(
               padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
               decoration: BoxDecoration(
@@ -948,7 +1579,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                       ),
                     ],
                   ),
-                  // Date Filter Button
                   GestureDetector(
                     onTap: () => _selectDate(context),
                     child: Container(
@@ -968,7 +1598,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
               ),
             ),
 
-            // Date Filter Row
             if (selectedDate != null)
               Container(
                 margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
@@ -1009,11 +1638,10 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                 ),
               ),
 
-            // Filter Chips
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Container(
-                margin: const EdgeInsets.fromLTRB(6, 15, 20,12),
+                margin: const EdgeInsets.fromLTRB(6, 15, 20, 12),
                 child: Row(
                   children: List.generate(filters.length, (index) {
                     final isSelected = selectedFilterIndex == index;
@@ -1050,7 +1678,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
               ),
             ),
 
-            // List
             Expanded(
               child: isLoading
                   ? Center(
@@ -1111,7 +1738,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                   : ListView.builder(
                 padding: const EdgeInsets.all(16),
                 itemCount: list.length,
-                itemBuilder: (context, index) => appointmentCard(list[index]),
+                itemBuilder: (context, index) => appointmentCard(list[index], index),
               ),
             ),
           ],
